@@ -43,6 +43,7 @@ class GreedyRewriteConfig;
 #define GEN_PASS_DECL_SYMBOLDCE
 #define GEN_PASS_DECL_SYMBOLPRIVATIZE
 #define GEN_PASS_DECL_TOPOLOGICALSORT
+#define GEN_PASS_DECL_TTLOPS
 #include "mlir/Transforms/Passes.h.inc"
 
 /// Creates an instance of the Canonicalizer pass, configured with default
@@ -61,6 +62,9 @@ std::unique_ptr<Pass>
 createCanonicalizerPass(const GreedyRewriteConfig &config,
                         ArrayRef<std::string> disabledPatterns = std::nullopt,
                         ArrayRef<std::string> enabledPatterns = std::nullopt);
+
+/// Creates a TTL ops pass.
+std::unique_ptr<Pass> createTTLOpsPass();
 
 /// Creates a pass to perform control-flow sinking.
 std::unique_ptr<Pass> createControlFlowSinkPass();

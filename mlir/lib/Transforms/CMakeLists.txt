@@ -1,6 +1,7 @@
 add_subdirectory(Utils)
 
 add_mlir_library(MLIRTransforms
+  TTLOps.cpp
   Canonicalizer.cpp
   ControlFlowSink.cpp
   CSE.cpp
@@ -18,8 +19,8 @@ add_mlir_library(MLIRTransforms
   SymbolDCE.cpp
   SymbolPrivatize.cpp
   TopologicalSort.cpp
-  ViewOpGraph.cpp
-
+  ViewOpGraph.cpp  
+  
   ADDITIONAL_HEADER_DIRS
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Transforms
 

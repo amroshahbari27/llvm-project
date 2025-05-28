@@ -45,6 +45,15 @@ def Canonicalizer : Pass<"canonicalize"> {
   ] # RewritePassUtils.options;
 }
 
+def TTLOps : Pass<"ttl-ops", "ModuleOp"> {
+  let summary = "Convert TTL operations to MLIR";
+  let description = [{
+    This pass converts TTL operations to their MLIR equivalents.
+  }];
+  let constructor = "mlir::createTTLOpsPass()";
+  let dependentDialects = ["func::FuncDialect"];
+}
+
 def ControlFlowSink : Pass<"control-flow-sink"> {
   let summary = "Sink operations into conditional blocks";
   let description = [{
