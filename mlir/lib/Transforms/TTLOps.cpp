@@ -1,6 +1,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/Support/raw_ostream.h"
+#include "TTLDataStructures.h"
 #include <set>
 #include <map>
 
@@ -30,7 +31,7 @@ int getFieldIndex(LLVM::GEPOp gepOp) {
   return -1;
 }
 
-void analyzeLoopStruct(Value loopStruct, std::set<int>& seenFields) {
+void analyzeLoopStruct(Value loopStruct, TTLAnalysis& analysis) {
   for (auto& block : loopStruct.getParentRegion()->getBlocks()) {
     for (auto& op : block) {
       if (auto storeOp = dyn_cast<LLVM::StoreOp>(op)) {
@@ -40,25 +41,38 @@ void analyzeLoopStruct(Value loopStruct, std::set<int>& seenFields) {
           int fieldIndex = getFieldIndex(gepOp);
           if (fieldIndex < 0) continue;
           
-          if (seenFields.count(fieldIndex) > 0) {
-            llvm::errs() << "Error: Multiple writes to field " << fieldIndex << "\n";
-            return;
-          }
-          seenFields.insert(fieldIndex);
-          
           // Handle loop variables (indices 1-12)
           if (fieldIndex >= 1 && fieldIndex <= 12) {
             int dimIndex = (fieldIndex - 1) / 4;
             int fieldOffset = (fieldIndex - 1) % 4;
             const char* dimName = dimIndex == 0 ? "x" : dimIndex == 1 ? "y" : "z";
-            const char* fieldName = fieldOffset == 0 ? "start" : fieldOffset == 1 ? "end" : fieldOffset == 2 ? "step" : "current";
             
             Value storedValue = storeOp.getValue();
+            bool isDynamic = true;
+            int value = 0;
+            
+            // Check if it's a constant
             if (auto constOp = storedValue.getDefiningOp<LLVM::ConstantOp>()) {
-              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>())
-                llvm::errs() << dimName << "." << fieldName << " = " << intAttr.getInt() << " (constant)\n";
+              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>()) {
+                value = intAttr.getInt();
+                isDynamic = false;
+              }
             } else {
-              llvm::errs() << dimName << "." << fieldName << " = dynamic\n";
+              // If not a constant, it's dynamic (e.g., function argument)
+              // For now, we'll use -1 to indicate dynamic value
+              value = -1;
+              isDynamic = true;
+            }
+            
+            // Add to analysis based on field offset
+            if (fieldOffset == 0) { // start
+              analysis.addLoop(dimName, value, 0, 0, 0, isDynamic);
+            } else if (fieldOffset == 1) { // end
+              analysis.updateLoopEnd(dimName, value, isDynamic);
+            } else if (fieldOffset == 2) { // step
+              analysis.updateLoopStep(dimName, value, isDynamic);
+            } else if (fieldOffset == 3) { // loop_dimension
+              analysis.updateLoopCurrent(dimName, value, isDynamic);
             }
           }
         }
@@ -67,9 +81,8 @@ void analyzeLoopStruct(Value loopStruct, std::set<int>& seenFields) {
   }
 }
 
-void analyzeTensorAccess(Value tensorStruct, const char* tensorName, Value loopStruct) {
-  llvm::errs() << "\nAnalyzing " << tensorName << " tensor access:\n";
-  std::set<int> seenFields;
+void analyzeTensorAccess(Value tensorStruct, const char* tensorName, Value loopStruct, TTLAnalysis& analysis) {
+  TensorAccess access;
   std::map<Value, const char*, ValueComparator> loopVarMap;
 
   // First analyze loop struct to build mapping of loop variables
@@ -99,100 +112,76 @@ void analyzeTensorAccess(Value tensorStruct, const char* tensorName, Value loopS
           int fieldIndex = getFieldIndex(gepOp);
           if (fieldIndex < 0) continue;
           
-          if (seenFields.count(fieldIndex) > 0) {
-            llvm::errs() << "Error: Multiple writes to field " << fieldIndex << "\n";
-            return;
-          }
-          seenFields.insert(fieldIndex);
+          Value storedValue = storeOp.getValue();
           
           // Handle tensor access fields
-          if (fieldIndex == 0) { // base pointer
-            llvm::errs() << "base = dynamic\n";
-          } else if (fieldIndex == 1) { // rank
-            Value storedValue = storeOp.getValue();
+          if (fieldIndex == 1) { // rank
             if (auto constOp = storedValue.getDefiningOp<LLVM::ConstantOp>()) {
               if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>()) {
-                int rank = intAttr.getInt();
-                llvm::errs() << "rank = " << rank << "D\n";
+                access.rank = intAttr.getInt();
               }
             }
           } else if (fieldIndex == 2) { // x_stride
-            Value storedValue = storeOp.getValue();
             if (auto constOp = storedValue.getDefiningOp<LLVM::ConstantOp>()) {
-              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>())
-                llvm::errs() << "x_stride = " << intAttr.getInt() << " (constant)\n";
+              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>()) {
+                access.x_stride = intAttr.getInt();
+              }
             } else {
-              llvm::errs() << "x_stride = dynamic\n";
+              access.x_stride = -1; // Dynamic
+              access.isDynamic = true;
             }
           } else if (fieldIndex == 3) { // y_stride
-            Value storedValue = storeOp.getValue();
             if (auto constOp = storedValue.getDefiningOp<LLVM::ConstantOp>()) {
-              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>())
-                llvm::errs() << "y_stride = " << intAttr.getInt() << " (constant)\n";
+              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>()) {
+                access.y_stride = intAttr.getInt();
+              }
             } else {
-              llvm::errs() << "y_stride = dynamic\n";
+              access.y_stride = -1; // Dynamic
+              access.isDynamic = true;
             }
           } else if (fieldIndex == 4) { // z_stride
-            Value storedValue = storeOp.getValue();
             if (auto constOp = storedValue.getDefiningOp<LLVM::ConstantOp>()) {
-              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>())
-                llvm::errs() << "z_stride = " << intAttr.getInt() << " (constant)\n";
+              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>()) {
+                access.z_stride = intAttr.getInt();
+              }
             } else {
-              llvm::errs() << "z_stride = dynamic\n";
+              access.z_stride = -1; // Dynamic
+              access.isDynamic = true;
             }
           } else if (fieldIndex == 5) { // x_index
-            Value storedValue = storeOp.getValue();
             if (auto loadOp = storedValue.getDefiningOp<LLVM::LoadOp>()) {
               if (auto gepOp = loadOp.getAddr().getDefiningOp<LLVM::GEPOp>()) {
                 if (loopVarMap.count(gepOp)) {
-                  llvm::errs() << "x_index = " << loopVarMap[gepOp] << " (loop var)\n";
-                } else {
-                  llvm::errs() << "x_index = dynamic\n";
+                  access.x_index = loopVarMap[gepOp];
+                  analysis.addTensorAccessToLoop(loopVarMap[gepOp], tensorName);
                 }
               }
-            } else if (auto constOp = storedValue.getDefiningOp<LLVM::ConstantOp>()) {
-              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>())
-                llvm::errs() << "x_index = " << intAttr.getInt() << " (constant)\n";
-            } else {
-              llvm::errs() << "x_index = dynamic\n";
             }
           } else if (fieldIndex == 6) { // y_index
-            Value storedValue = storeOp.getValue();
             if (auto loadOp = storedValue.getDefiningOp<LLVM::LoadOp>()) {
               if (auto gepOp = loadOp.getAddr().getDefiningOp<LLVM::GEPOp>()) {
                 if (loopVarMap.count(gepOp)) {
-                  llvm::errs() << "y_index = " << loopVarMap[gepOp] << " (loop var)\n";
-                } else {
-                  llvm::errs() << "y_index = dynamic\n";
+                  access.y_index = loopVarMap[gepOp];
+                  analysis.addTensorAccessToLoop(loopVarMap[gepOp], tensorName);
                 }
               }
-            } else if (auto constOp = storedValue.getDefiningOp<LLVM::ConstantOp>()) {
-              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>())
-                llvm::errs() << "y_index = " << intAttr.getInt() << " (constant)\n";
-            } else {
-              llvm::errs() << "y_index = dynamic\n";
             }
           } else if (fieldIndex == 7) { // z_index
-            Value storedValue = storeOp.getValue();
             if (auto loadOp = storedValue.getDefiningOp<LLVM::LoadOp>()) {
               if (auto gepOp = loadOp.getAddr().getDefiningOp<LLVM::GEPOp>()) {
                 if (loopVarMap.count(gepOp)) {
-                  llvm::errs() << "z_index = " << loopVarMap[gepOp] << " (loop var)\n";
-                } else {
-                  llvm::errs() << "z_index = dynamic\n";
+                  access.z_index = loopVarMap[gepOp];
+                  analysis.addTensorAccessToLoop(loopVarMap[gepOp], tensorName);
                 }
               }
-            } else if (auto constOp = storedValue.getDefiningOp<LLVM::ConstantOp>()) {
-              if (auto intAttr = constOp.getValue().dyn_cast<IntegerAttr>())
-                llvm::errs() << "z_index = " << intAttr.getInt() << " (constant)\n";
-            } else {
-              llvm::errs() << "z_index = dynamic\n";
             }
           }
         }
       }
     }
   }
+  
+  analysis.addTensorAccess(tensorName, access);
 }
 
 class TTLOps : public PassWrapper<TTLOps, OperationPass<ModuleOp>> {
@@ -205,7 +194,7 @@ public:
     getOperation()->walk([&](LLVM::LLVMFuncOp funcOp) {
       if (funcOp.getName() == "TTL_matmul_kernel") {
         llvm::errs() << "Analyzing TTL_matmul_kernel:\n";
-        std::set<int> seenFields;
+        TTLAnalysis analysis;
 
         for (auto& block : funcOp.getBody()) {
           for (auto& op : block) {
@@ -213,14 +202,98 @@ public:
               if (callOp.getCallee()->str() != "TTL_loop_affine_matmul_body") continue;
 
               Value loopStruct = callOp.getOperand(0);
-              analyzeLoopStruct(loopStruct, seenFields);
+              analyzeLoopStruct(loopStruct, analysis);
 
               for (size_t i = 1; i < callOp.getNumOperands(); i++) {
                 std::string tensorName = "Tensor" + std::to_string(i);
-                analyzeTensorAccess(callOp.getOperand(i), tensorName.c_str(), loopStruct);
+                analyzeTensorAccess(callOp.getOperand(i), tensorName.c_str(), loopStruct, analysis);
               }
             }
           }
+        }
+        
+        // Print analysis results
+        for (const auto& loop : analysis.loops) {
+          llvm::errs() << "\nLoop " << loop.name << ":\n";
+          
+          // Start
+          llvm::errs() << "  start = ";
+          if (loop.var.start == -1) {
+            llvm::errs() << "dynamic (dynamic)\n";
+          } else {
+            llvm::errs() << loop.var.start << " (constant)\n";
+          }
+          
+          // End
+          llvm::errs() << "  end = ";
+          if (loop.var.end == -1) {
+            llvm::errs() << "dynamic (dynamic)\n";
+          } else {
+            llvm::errs() << loop.var.end << " (constant)\n";
+          }
+          
+          // Step
+          llvm::errs() << "  step = ";
+          if (loop.var.step == -1) {
+            llvm::errs() << "dynamic (dynamic)\n";
+          } else {
+            llvm::errs() << loop.var.step << " (constant)\n";
+          }
+          
+          // Loop dimension index (0=outer, 1=middle, 2=inner)
+          llvm::errs() << "  loop_dimension = " << loop.var.current;
+          if (loop.var.current == 0) {
+            llvm::errs() << " (outer loop)\n";
+          } else if (loop.var.current == 1) {
+            llvm::errs() << " (middle loop)\n";
+          } else if (loop.var.current == 2) {
+            llvm::errs() << " (inner loop)\n";
+          } else {
+            llvm::errs() << " (dimension index)\n";
+          }
+          
+          llvm::errs() << "  Accessed tensors: ";
+          for (const auto& tensor : loop.accessedTensors) {
+            llvm::errs() << tensor << " ";
+          }
+          llvm::errs() << "\n";
+        }
+        
+        for (const auto& [name, access] : analysis.tensorAccesses) {
+          llvm::errs() << "\nAnalyzing " << name << " tensor access:\n";
+          llvm::errs() << "  rank = " << access.rank << "D\n";
+          
+          llvm::errs() << "  x_stride = ";
+          if (access.x_stride == -1) {
+            llvm::errs() << "dynamic (dynamic)\n";
+          } else {
+            llvm::errs() << access.x_stride << " (constant)\n";
+          }
+          
+          llvm::errs() << "  y_stride = ";
+          if (access.y_stride == -1) {
+            llvm::errs() << "dynamic (dynamic)\n";
+          } else {
+            llvm::errs() << access.y_stride << " (constant)\n";
+          }
+          
+          llvm::errs() << "  z_stride = ";
+          if (access.z_stride == -1) {
+            llvm::errs() << "dynamic (dynamic)\n";
+          } else {
+            llvm::errs() << access.z_stride << " (constant)\n";
+          }
+          
+          llvm::errs() << "  x_index = " << access.x_index << " (loop var)\n";
+          llvm::errs() << "  y_index = " << access.y_index << " (loop var)\n";
+          llvm::errs() << "  z_index = " << access.z_index << " (loop var)\n";
+          
+          llvm::errs() << "  Accessed in loops: ";
+          auto loops = analysis.getLoopsForTensor(name);
+          for (const auto& loop : loops) {
+            llvm::errs() << loop << " ";
+          }
+          llvm::errs() << "\n";
         }
       }
     });
