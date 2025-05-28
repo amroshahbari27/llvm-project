@@ -4,6 +4,11 @@
 #include "TTLDataStructures.h"
 #include <set>
 #include <map>
+#include "mlir/IR/Builders.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 
 using namespace mlir;
 
@@ -184,6 +189,176 @@ void analyzeTensorAccess(Value tensorStruct, const char* tensorName, Value loopS
   analysis.addTensorAccess(tensorName, access);
 }
 
+void generateMLIRLoops(ModuleOp module, const TTLAnalysis& analysis) {
+  MLIRContext* context = module.getContext();
+  OpBuilder builder(context);
+  builder.setInsertionPointToEnd(module.getBody());
+  
+  // Create function type with dynamic parameters
+  SmallVector<Type, 8> paramTypes;
+  SmallVector<Type, 8> resultTypes;
+  
+  // Add parameters for dynamic loop bounds
+  std::map<std::string, int> loopBoundIndices;
+  int paramIdx = 0;
+  for (const auto& loop : analysis.loops) {
+    if (loop.var.end == -1) { // Dynamic end bound
+      paramTypes.push_back(builder.getIndexType());
+      loopBoundIndices[loop.name + "_end"] = paramIdx++;
+    }
+  }
+  
+  // Add parameters for dynamic tensor strides
+  std::map<std::string, int> strideIndices;
+  for (const auto& [name, access] : analysis.tensorAccesses) {
+    if (access.y_stride == -1) { // Dynamic stride
+      paramTypes.push_back(builder.getIndexType());
+      strideIndices[name + "_y_stride"] = paramIdx++;
+    }
+  }
+  
+  // Create the function
+  auto funcType = builder.getFunctionType(paramTypes, resultTypes);
+  auto funcOp = builder.create<func::FuncOp>(
+      module.getLoc(), "generated_affine_loops", funcType);
+  
+  // Add entry block
+  Block* entryBlock = funcOp.addEntryBlock();
+  builder.setInsertionPointToStart(entryBlock);
+  
+  // Sort loops by dimension to ensure proper nesting
+  std::vector<LoopInfo> sortedLoops = analysis.loops;
+  std::sort(sortedLoops.begin(), sortedLoops.end(), 
+            [](const LoopInfo& a, const LoopInfo& b) {
+              return a.var.current < b.var.current;
+            });
+  
+  // Generate nested affine loops
+  SmallVector<mlir::affine::AffineForOp, 3> affineLoops;
+  
+  // Lambda to recursively generate loops
+  std::function<void(size_t)> generateAffineLoop = [&](size_t loopIdx) {
+    if (loopIdx >= sortedLoops.size()) {
+      // Innermost loop body - add comment about tensor accesses
+      auto loc = builder.getUnknownLoc();
+      
+      // Create a comment operation (using a custom attribute)
+      builder.create<arith::ConstantOp>(loc, builder.getI32IntegerAttr(0));
+      
+      return;
+    }
+    
+    const auto& loop = sortedLoops[loopIdx];
+    
+    // Create lower bound (always 0 for now)
+    auto lowerBound = builder.getIntegerAttr(builder.getIndexType(), loop.var.start);
+    auto lowerBoundMap = AffineMap::getConstantMap(loop.var.start, context);
+    
+    // Create upper bound
+    AffineMap upperBoundMap;
+    SmallVector<Value, 1> upperBoundOperands;
+    
+    if (loop.var.end == -1) {
+      // Dynamic bound - use symbol
+      upperBoundMap = AffineMap::get(0, 1, builder.getAffineSymbolExpr(0), context);
+      int idx = loopBoundIndices[loop.name + "_end"];
+      upperBoundOperands.push_back(entryBlock->getArgument(idx));
+    } else {
+      // Static bound
+      upperBoundMap = AffineMap::getConstantMap(loop.var.end, context);
+    }
+    
+    // Create the affine for loop
+    auto affineFor = builder.create<mlir::affine::AffineForOp>(
+        builder.getUnknownLoc(),
+        ValueRange{}, // Lower bound operands (empty for constant)
+        lowerBoundMap,
+        upperBoundOperands,
+        upperBoundMap,
+        loop.var.step);
+    
+    affineLoops.push_back(affineFor);
+    
+    // Set insertion point inside the loop
+    builder.setInsertionPointToStart(affineFor.getBody());
+    
+    // Generate inner loops
+    generateAffineLoop(loopIdx + 1);
+    
+    // Set insertion point after the loop
+    builder.setInsertionPointAfter(affineFor);
+  };
+  
+  // Start generating from outermost loop
+  generateAffineLoop(0);
+  
+  // Add return operation
+  builder.create<func::ReturnOp>(module.getLoc());
+  
+  // Print the generated function
+  llvm::errs() << "\n\nGenerated Affine MLIR code:\n";
+  funcOp.print(llvm::errs());
+  llvm::errs() << "\n\n";
+  
+  // Also print a simplified representation
+  llvm::errs() << "Simplified loop structure:\n";
+  llvm::errs() << "func @generated_affine_loops(";
+  
+  // Print function parameters
+  bool first = true;
+  for (const auto& loop : sortedLoops) {
+    if (loop.var.end == -1) {
+      if (!first) llvm::errs() << ", ";
+      llvm::errs() << "%" << loop.name << "_end: index";
+      first = false;
+    }
+  }
+  
+  for (const auto& [name, access] : analysis.tensorAccesses) {
+    if (access.y_stride == -1) {
+      if (!first) llvm::errs() << ", ";
+      llvm::errs() << "%" << name << "_y_stride: index";
+      first = false;
+    }
+  }
+  
+  llvm::errs() << ") {\n";
+  
+  // Print loop structure
+  std::string indent = "  ";
+  for (const auto& loop : sortedLoops) {
+    llvm::errs() << indent << "affine.for %" << loop.name << " = " << loop.var.start;
+    llvm::errs() << " to ";
+    if (loop.var.end == -1) {
+      llvm::errs() << "%" << loop.name << "_end";
+    } else {
+      llvm::errs() << loop.var.end;
+    }
+    llvm::errs() << " {\n";
+    indent += "  ";
+  }
+  
+  // Print tensor accesses in innermost loop
+  llvm::errs() << indent << "// Tensor accesses:\n";
+  for (const auto& [name, access] : analysis.tensorAccesses) {
+    llvm::errs() << indent << "// " << name << "[";
+    llvm::errs() << "%" << access.x_index;
+    if (!access.y_index.empty() && access.y_index != "dynamic") {
+      llvm::errs() << ", %" << access.y_index;
+    }
+    llvm::errs() << "]\n";
+  }
+  
+  // Close loops
+  for (size_t i = 0; i < sortedLoops.size(); i++) {
+    indent = indent.substr(0, indent.length() - 2);
+    llvm::errs() << indent << "}\n";
+  }
+  
+  llvm::errs() << "  return\n";
+  llvm::errs() << "}\n";
+}
+
 class TTLOps : public PassWrapper<TTLOps, OperationPass<ModuleOp>> {
 public:
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TTLOps)
@@ -191,6 +366,12 @@ public:
   StringRef getArgument() const final { return "ttl-ops"; }
 
   void runOnOperation() override {
+    // Register required dialects
+    MLIRContext *context = &getContext();
+    context->loadDialect<mlir::func::FuncDialect>();
+    context->loadDialect<mlir::affine::AffineDialect>();
+    context->loadDialect<mlir::arith::ArithDialect>();
+
     getOperation()->walk([&](LLVM::LLVMFuncOp funcOp) {
       if (funcOp.getName() == "TTL_matmul_kernel") {
         llvm::errs() << "Analyzing TTL_matmul_kernel:\n";
@@ -295,6 +476,8 @@ public:
           }
           llvm::errs() << "\n";
         }
+        
+        generateMLIRLoops(getOperation(), analysis);
       }
     });
   }
