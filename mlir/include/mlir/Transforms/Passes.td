@@ -54,6 +54,34 @@ def Canonicalizer : Pass<"canonicalize"> {
   ] # RewritePassUtils.options;
 }
 
+def TTLOps : Pass<"ttl-ops", "ModuleOp"> {
+  let summary = "Convert TTL operations to MLIR";
+  let description = [{
+    This pass converts TTL operations to their MLIR equivalents.
+  }];
+  let constructor = "mlir::createTTLOpsPass()";
+  let dependentDialects = ["func::FuncDialect"];
+}
+
+def TTLPipeline : Pass<"ttl-pipeline", "ModuleOp"> {
+  let summary = "Run a pipeline of TTL passes";
+  let description = [{
+    This pass runs a sequence of TTL-related passes in a specific order.
+  }];
+  let constructor = "mlir::createTTLPipelinePass()";
+  let dependentDialects = ["func::FuncDialect"];
+}
+
+def TTLTile : Pass<"ttl-tile", "ModuleOp"> {
+  let summary = "Tile loops with ttl.tile attribute";
+  let description = [{
+    This pass tiles loops that have a ttl.tile attribute, applying the specified
+    tile sizes to perfectly nested loop bands.
+  }];
+  let constructor = "mlir::createTTLTilePass()";
+  let dependentDialects = ["func::FuncDialect", "affine::AffineDialect"];
+}
+
 def ControlFlowSink : Pass<"control-flow-sink"> {
   let summary = "Sink operations into conditional blocks";
   let description = [{
@@ -584,6 +612,14 @@ def CompositeFixedPointPass : Pass<"composite-fixed-point-pass"> {
     Option<"maxIter", "max-iterations", "int", /*default=*/"10",
       "Maximum number of iterations if inner pipeline">,
   ];
+}
+
+def TTLToEmitC : Pass<"ttl-to-emitc", "func::FuncOp"> {
+  let summary = "Convert TTL operations to EmitC dialect";
+  let description = [{
+    This pass converts TTL operations to EmitC dialect for C code generation.
+  }];
+  let dependentDialects = ["mlir::emitc::EmitCDialect"];
 }
 
 #endif // MLIR_TRANSFORMS_PASSES

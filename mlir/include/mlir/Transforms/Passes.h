@@ -46,6 +46,10 @@ class GreedyRewriteConfig;
 #define GEN_PASS_DECL_SYMBOLPRIVATIZE
 #define GEN_PASS_DECL_TOPOLOGICALSORT
 #define GEN_PASS_DECL_COMPOSITEFIXEDPOINTPASS
+#define GEN_PASS_DECL_TTLOPS
+#define GEN_PASS_DECL_TTLPIPELINE
+#define GEN_PASS_DECL_TTLTOEMITC
+#define GEN_PASS_DECL_TTLTILE
 #include "mlir/Transforms/Passes.h.inc"
 
 /// Creates an instance of the Canonicalizer pass, configured with default
@@ -64,6 +68,18 @@ std::unique_ptr<Pass>
 createCanonicalizerPass(const GreedyRewriteConfig &config,
                         ArrayRef<std::string> disabledPatterns = std::nullopt,
                         ArrayRef<std::string> enabledPatterns = std::nullopt);
+
+/// Creates a TTL ops pass.
+std::unique_ptr<Pass> createTTLOpsPass();
+
+/// Creates a TTL pipeline pass that runs multiple passes.
+std::unique_ptr<Pass> createTTLPipelinePass();
+
+/// Creates a pass to tile loops with ttl.tile attribute.
+std::unique_ptr<Pass> createTTLTilePass();
+
+/// Creates a TTL to emit C pass.
+std::unique_ptr<Pass> createTTLToEmitC();
 
 /// Creates a pass to perform control-flow sinking.
 std::unique_ptr<Pass> createControlFlowSinkPass();
