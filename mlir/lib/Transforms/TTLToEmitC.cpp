@@ -34,16 +34,19 @@ struct TTLToEmitC : public PassWrapper<TTLToEmitC, OperationPass<ModuleOp>> {
     // Equivalent to:
     // --lower-affine --convert-scf-to-emitc --convert-arith-to-emitc
     // --convert-math-to-emitc --convert-func-to-emitc --convert-to-emitc
+    // dump mlir between each pass
     pm.addPass(createLowerAffinePass());
-    pm.addPass(createSCFToEmitC());
-    // Expand complex arith ops like arith.minsi before lowering to EmitC
+    // pm.addPass(createSCFToEmitC());
+    // // Expand complex arith ops like arith.minsi before lowering to EmitC
+    // pm.addPass(arith::createArithExpandOpsPass());
+    // pm.addPass(createConvertArithToEmitC());
+    // pm.addPass(createConvertMathToEmitC());
+    // pm.addPass(createConvertMemRefToEmitC());
+    // pm.addPass(createConvertFuncToEmitC());
+    // pm.addPass(createConvertMemRefToEmitC());
     pm.addPass(arith::createArithExpandOpsPass());
-    pm.addPass(createConvertArithToEmitC());
-    pm.addPass(createConvertMathToEmitC());
-    pm.addPass(createConvertMemRefToEmitC());
-    pm.addPass(createConvertFuncToEmitC());
     pm.addPass(createConvertToEmitC());
-    
+    pm.addPass(createConvertMathToEmitC());
 
     // Reconcile unrealized casts must run at module level
     pm.addPass(createReconcileUnrealizedCastsPass());
