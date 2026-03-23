@@ -77,6 +77,7 @@ set(LIBS
   MLIRParser
   MLIRPass
   MLIRTransforms
+  MLIRTTLTransforms
   MLIRTransformUtils
   MLIRSupport
   MLIRIR

@@ -158,6 +158,11 @@ public:
         rewriter.create<arith::ConstantIndexOp>(loc, op.getStepAsInt());
     auto scfForOp = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound,
                                                 step, op.getInits());
+    // Preserve ttl.* attributes (phase markers, tile metadata, etc.)
+    // so they survive the affine→SCF conversion.
+    for (auto &attr : op->getAttrs())
+      if (attr.getName().strref().starts_with("ttl."))
+        scfForOp->setAttr(attr.getName(), attr.getValue());
     rewriter.eraseBlock(scfForOp.getBody());
     rewriter.inlineRegionBefore(op.getRegion(), scfForOp.getRegion(),
                                 scfForOp.getRegion().end());

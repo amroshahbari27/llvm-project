@@ -54,32 +54,99 @@ def Canonicalizer : Pass<"canonicalize"> {
   ] # RewritePassUtils.options;
 }
 
-def TTLOps : Pass<"ttl-ops", "ModuleOp"> {
-  let summary = "Convert TTL operations to MLIR";
-  let description = [{
-    This pass converts TTL operations to their MLIR equivalents.
-  }];
-  let constructor = "mlir::createTTLOpsPass()";
-  let dependentDialects = ["func::FuncDialect"];
-}
 
-def TTLPipeline : Pass<"ttl-pipeline", "ModuleOp"> {
-  let summary = "Run a pipeline of TTL passes";
+def TTLLegalityCheck : Pass<"ttl-legality-check", "ModuleOp"> {
+  let summary = "Validate TTL pragma annotations before transformation";
   let description = [{
-    This pass runs a sequence of TTL-related passes in a specific order.
+    Checks structural preconditions for upstream affine utilities:
+    kernel/tensor presence, tile-size validity, band depth, copy-name
+    resolution, copy-scope, and affine-only access patterns.
   }];
-  let constructor = "mlir::createTTLPipelinePass()";
-  let dependentDialects = ["func::FuncDialect"];
+  let constructor = "mlir::createTTLLegalityCheckPass()";
+  let dependentDialects = ["func::FuncDialect", "affine::AffineDialect"];
 }
 
 def TTLTile : Pass<"ttl-tile", "ModuleOp"> {
-  let summary = "Tile loops with ttl.tile attribute";
+  let summary = "Tile annotated affine loops via tilePerfectlyNested";
   let description = [{
-    This pass tiles loops that have a ttl.tile attribute, applying the specified
-    tile sizes to perfectly nested loop bands.
+    For each affine.for carrying ttl.tile, extracts the perfectly nested
+    band and calls tilePerfectlyNested with the pragma-specified sizes.
+    Transfers ttl.copy attributes to the new outermost tiled loop.
   }];
   let constructor = "mlir::createTTLTilePass()";
   let dependentDialects = ["func::FuncDialect", "affine::AffineDialect"];
+}
+
+def TTLCopyGenerate : Pass<"ttl-copy-generate", "ModuleOp"> {
+  let summary = "Generate explicit copies via affineDataCopyGenerate";
+  let description = [{
+    For each affine.for carrying ttl.copy, calls affineDataCopyGenerate
+    on the innermost tiled loop, filtered to each named tensor.
+    Produces DMA start/wait ops with local memory space 3.
+  }];
+  let constructor = "mlir::createTTLCopyGeneratePass()";
+  let dependentDialects = ["affine::AffineDialect", "memref::MemRefDialect"];
+}
+
+def TTLLowerCopies : Pass<"ttl-lower-copies", "ModuleOp"> {
+  let summary = "Convert DMA copy-promotion ops to TTL dialect ops";
+  let description = [{
+    Replaces memref.dma_start/dma_wait produced by affineDataCopyGenerate
+    with ttl.import/ttl.export.  Replaces local memref.load/store with
+    ttl.read_tensor/ttl.write_tensor.  Runs after lower-affine.
+  }];
+  let constructor = "mlir::createTTLLowerCopiesPass()";
+  let dependentDialects = ["func::FuncDialect", "ttl::TTLDialect",
+                           "arith::ArithDialect", "memref::MemRefDialect",
+                           "scf::SCFDialect"];
+}
+
+def TTLPromoteAccumulator : Pass<"ttl-promote-accumulator", "ModuleOp"> {
+  let summary = "Promote reduction store-load pairs to iter_args (scalar acc)";
+  let description = [{
+    Detects affine.for loops where a memref location is loaded and stored
+    every iteration with invariant indices (reduction pattern, e.g.
+    C[i,j] += A[i,k]*B[k,j]).  Promotes the reduction variable to an
+    iter_arg, hoisting the load before the loop and the store after.
+    This eliminates redundant memory traffic in the innermost loop.
+  }];
+  let constructor = "mlir::createTTLPromoteAccumulatorPass()";
+  let dependentDialects = ["func::FuncDialect", "affine::AffineDialect"];
+}
+
+def TTLPipelineDataTransfer : Pass<"ttl-pipeline-data-transfer", "ModuleOp"> {
+  let summary = "Pipeline data transfers in annotated affine loops";
+  let description = [{
+    For each affine.for carrying ttl.pipeline, runs the upstream
+    AffinePipelineDataTransfer pass which double-buffers DMA-promoted
+    local buffers and skews the loop body to overlap data movement
+    with computation.  Must run after ttl-copy-generate and before
+    lower-affine.
+  }];
+  let constructor = "mlir::createTTLPipelineDataTransferPass()";
+  let dependentDialects = ["func::FuncDialect", "affine::AffineDialect",
+                           "memref::MemRefDialect"];
+}
+
+def TTLToEmitCPass : Pass<"ttl-to-emitc", "ModuleOp"> {
+  let summary = "Lower TTL dialect to EmitC for OpenCL C output";
+  let description = [{
+    Converts kernel func.func to emitc.func with __kernel signature,
+    lowers global memref access to pointer subscripts, converts TTL ops
+    to emitc.call_opaque (TTL C API), and runs standard dialect-to-EmitC.
+  }];
+  let constructor = "mlir::createTTLToEmitC()";
+  let dependentDialects = ["emitc::EmitCDialect", "ttl::TTLDialect"];
+}
+
+def TTLPipeline : Pass<"ttl-pipeline", "ModuleOp"> {
+  let summary = "End-to-end TTL compilation pipeline";
+  let description = [{
+    Orchestrates: legality-check, tile, copy-generate, lower-affine,
+    lower-copies, to-emitc.
+  }];
+  let constructor = "mlir::createTTLPipelinePass()";
+  let dependentDialects = ["func::FuncDialect"];
 }
 
 def ControlFlowSink : Pass<"control-flow-sink"> {
@@ -614,12 +681,5 @@ def CompositeFixedPointPass : Pass<"composite-fixed-point-pass"> {
   ];
 }
 
-def TTLToEmitC : Pass<"ttl-to-emitc", "func::FuncOp"> {
-  let summary = "Convert TTL operations to EmitC dialect";
-  let description = [{
-    This pass converts TTL operations to EmitC dialect for C code generation.
-  }];
-  let dependentDialects = ["mlir::emitc::EmitCDialect"];
-}
 
 #endif // MLIR_TRANSFORMS_PASSES

@@ -7,7 +7,10 @@ add_mlir_dialect_library(MLIRTTLDialect
 
   DEPENDS
   MLIRTTLOpsIncGen
+  MLIRTTLOpsTypesIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR
-) 
+  MLIRMemRefDialect
+  MLIRSideEffectInterfaces
+)

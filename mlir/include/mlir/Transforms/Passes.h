@@ -46,7 +46,6 @@ class GreedyRewriteConfig;
 #define GEN_PASS_DECL_SYMBOLPRIVATIZE
 #define GEN_PASS_DECL_TOPOLOGICALSORT
 #define GEN_PASS_DECL_COMPOSITEFIXEDPOINTPASS
-#define GEN_PASS_DECL_TTLOPS
 #define GEN_PASS_DECL_TTLPIPELINE
 #define GEN_PASS_DECL_TTLTOEMITC
 #define GEN_PASS_DECL_TTLTILE
@@ -69,17 +68,30 @@ createCanonicalizerPass(const GreedyRewriteConfig &config,
                         ArrayRef<std::string> disabledPatterns = std::nullopt,
                         ArrayRef<std::string> enabledPatterns = std::nullopt);
 
-/// Creates a TTL ops pass.
-std::unique_ptr<Pass> createTTLOpsPass();
-
-/// Creates a TTL pipeline pass that runs multiple passes.
+/// End-to-end TTL compilation pipeline.
 std::unique_ptr<Pass> createTTLPipelinePass();
 
-/// Creates a pass to tile loops with ttl.tile attribute.
+/// Validate TTL pragma annotations before transformation.
+std::unique_ptr<Pass> createTTLLegalityCheckPass();
+
+/// Tile annotated affine loops via tilePerfectlyNested.
 std::unique_ptr<Pass> createTTLTilePass();
 
-/// Creates a TTL to emit C pass.
+/// Generate explicit copies via affineDataCopyGenerate.
+std::unique_ptr<Pass> createTTLCopyGeneratePass();
+
+/// Convert DMA copy-promotion ops to TTL dialect ops.
+std::unique_ptr<Pass> createTTLLowerCopiesPass();
+
+/// Pipeline data transfers in annotated affine loops (double-buffer + skew).
+std::unique_ptr<Pass> createTTLPipelineDataTransferPass();
+
+/// Promote loop-invariant reduction store-load pairs to iter_args.
+std::unique_ptr<Pass> createTTLPromoteAccumulatorPass();
+
+/// Lower TTL dialect to EmitC and run standard dialect conversion.
 std::unique_ptr<Pass> createTTLToEmitC();
+
 
 /// Creates a pass to perform control-flow sinking.
 std::unique_ptr<Pass> createControlFlowSinkPass();

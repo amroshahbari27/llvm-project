@@ -1,49 +1,26 @@
-//===- TTLOps.cpp - MLIR TTL dialect ops implementation -----===//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
-//===----------------------------------------------------------------------===//
+//===- TTLOps.cpp - TTL dialect ops implementation ------------------------===//
 
 #include "mlir/Dialect/TTL/TTLDialect.h"
-
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
-#include "mlir/IR/TypeUtilities.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 
 using namespace mlir;
+using namespace mlir::ttl;
 
-namespace mlir {
-namespace ttl {
-
-//===----------------------------------------------------------------------===//
-// CopyOp
-//===----------------------------------------------------------------------===//
-
-LogicalResult CopyOp::verify() {
-  if (!isa<MemRefType>(getSource().getType()) || !isa<MemRefType>(getDestination().getType())) {
-    return emitOpError("both source and destination must be memref types");
-  }
-  MemRefType sourceType = cast<MemRefType>(getSource().getType());
-  MemRefType destType = cast<MemRefType>(getDestination().getType());
-
-  if (sourceType.getElementType() != destType.getElementType()) {
-    return emitOpError("source and destination must have the same element type");
-  }
-
-  if (sourceType.getShape() != destType.getShape()) {
-    return emitOpError("source and destination must have the same shape");
-  }
-
+LogicalResult CreateShapeOp::verify() {
+  size_t n = getDims().size();
+  if (n < 1 || n > 3)
+    return emitOpError("expected 1 to 3 dimension operands, got ") << n;
   return success();
 }
 
-} // namespace ttl
-} // namespace mlir
+LogicalResult TileCountOp::verify() {
+  StringRef d = getDim();
+  if (d != "width" && d != "height" && d != "depth")
+    return emitOpError("dim must be \"width\", \"height\", or \"depth\"");
+  return success();
+}
 
 #define GET_OP_CLASSES
-#include "mlir/Dialect/TTL/TTLOps.cpp.inc" 
+#include "mlir/Dialect/TTL/TTLOps.cpp.inc"
